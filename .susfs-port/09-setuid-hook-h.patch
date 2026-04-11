@@ -1,0 +1,12 @@
+diff --git a/kernel-6.6/KernelSU-Next/kernel/setuid_hook.h b/kernel-6.6/KernelSU-Next/kernel/setuid_hook.h
+index 3a3dfea8..b8486238 100644
+--- a/kernel-6.6/KernelSU-Next/kernel/setuid_hook.h
++++ b/kernel-6.6/KernelSU-Next/kernel/setuid_hook.h
+@@ -7,7 +7,4 @@
+ void ksu_setuid_hook_init(void);
+ void ksu_setuid_hook_exit(void);
+ 
+-// Handler functions for hook_manager
+-int ksu_handle_setresuid(uid_t old_uid, uid_t new_uid);
+-
+ #endif
