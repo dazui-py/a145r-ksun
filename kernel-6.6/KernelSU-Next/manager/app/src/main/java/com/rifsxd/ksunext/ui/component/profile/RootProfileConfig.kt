@@ -4,8 +4,6 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
@@ -47,6 +45,7 @@ fun RootProfileConfig(
             )
         }
 
+        /* 
         var expanded by remember { mutableStateOf(false) }
         val currentNamespace = when (profile.namespace) {
             Natives.Profile.Namespace.INHERITED.ordinal -> stringResource(R.string.profile_namespace_inherited)
@@ -100,6 +99,7 @@ fun RootProfileConfig(
                 }
             }
         })
+        */
 
         UidPanel(uid = profile.uid, label = "uid", onUidChange = {
             onProfileChange(

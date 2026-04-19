@@ -15,13 +15,10 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
-import com.rifsxd.ksunext.ui.LocalScrollState
-import com.rifsxd.ksunext.ui.rememberScrollConnection
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.Dp
-import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.dropUnlessResumed
 import com.ramcosta.composedestinations.annotation.Destination
 import com.ramcosta.composedestinations.annotation.RootGraph
@@ -49,8 +46,6 @@ fun BackupRestoreScreen(navigator: DestinationsNavigator) {
 
     val isManager = Natives.isManager
     val ksuVersion = if (isManager) Natives.version else null
-    
-    val navBarPadding = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() + 112.dp
 
     Scaffold(
         topBar = {
@@ -61,7 +56,7 @@ fun BackupRestoreScreen(navigator: DestinationsNavigator) {
                 scrollBehavior = scrollBehavior
             )
         },
-        snackbarHost = { SnackbarHost(snackBarHost, modifier = Modifier.padding(bottom = navBarPadding)) },
+        snackbarHost = { SnackbarHost(snackBarHost) },
         contentWindowInsets = WindowInsets.safeDrawing.only(WindowInsetsSides.Top + WindowInsetsSides.Horizontal)
     ) { paddingValues ->
         val loadingDialog = rememberLoadingDialog()
@@ -71,25 +66,7 @@ fun BackupRestoreScreen(navigator: DestinationsNavigator) {
         Column(
             modifier = Modifier
                 .padding(paddingValues)
-                .let { modifier ->
-                    val bottomBarScrollState = LocalScrollState.current
-                    val bottomBarScrollConnection = if (bottomBarScrollState != null) {
-                        rememberScrollConnection(
-                            isScrollingDown = bottomBarScrollState.isScrollingDown,
-                            scrollOffset = bottomBarScrollState.scrollOffset,
-                            previousScrollOffset = bottomBarScrollState.previousScrollOffset,
-                            threshold = 30f
-                        )
-                    } else null
-
-                    if (bottomBarScrollConnection != null) {
-                        modifier
-                            .nestedScroll(bottomBarScrollConnection)
-                            .nestedScroll(scrollBehavior.nestedScrollConnection)
-                    } else {
-                        modifier.nestedScroll(scrollBehavior.nestedScrollConnection)
-                    }
-                }
+                .nestedScroll(scrollBehavior.nestedScrollConnection)
                 .verticalScroll(rememberScrollState())
         ) {
 
@@ -174,39 +151,43 @@ fun BackupRestoreScreen(navigator: DestinationsNavigator) {
                 )
             }
 
+            val prefs = context.getSharedPreferences("settings", Context.MODE_PRIVATE)
+
+
             val moduleRestore = stringResource(id = R.string.module_restore)
             val restoreMessage = stringResource(id = R.string.module_restore_message)
 
-            ListItem(
-                leadingContent = {
-                    Icon(
-                        Icons.Filled.Restore,
-                        moduleRestore,
-                        tint = MaterialTheme.colorScheme.onSurface
-                    )
-                },
-                headlineContent = { 
-                    Text(
-                        moduleRestore,
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.onSurface
-                    ) 
-                },
-                modifier = Modifier.clickable(
-                    onClick = {
-                        scope.launch {
-                            val result = restoreDialog.awaitConfirm(title = moduleRestore, content = restoreMessage)
-                            if (result == ConfirmResult.Confirmed) {
-                                loadingDialog.withLoading {
-                                    moduleRestore()
-                                    showRebootDialog = true
-                                }
-                            }
-                        }
-                    }
-                )
-            )
+            // ListItem(
+            //     leadingContent = {
+            //         Icon(
+            //             Icons.Filled.Restore,
+            //             moduleRestore,
+            //             tint = MaterialTheme.colorScheme.onSurface
+            //         )
+            //     },
+            //     headlineContent = { 
+            //         Text(
+            //             moduleRestore,
+            //             style = MaterialTheme.typography.titleMedium,
+            //             fontWeight = FontWeight.SemiBold,
+            //             color = MaterialTheme.colorScheme.onSurface
+            //         ) 
+            //     },
+            //     modifier = Modifier.clickable(
+            //         enabled = false,
+            //         onClick = {
+            //             scope.launch {
+            //                 val result = restoreDialog.awaitConfirm(title = moduleRestore, content = restoreMessage)
+            //                 if (result == ConfirmResult.Confirmed) {
+            //                     loadingDialog.withLoading {
+            //                         moduleRestore()
+            //                         showRebootDialog = true
+            //                     }
+            //                 }
+            //             }
+            //         }
+            //     )
+            // )
 
             HorizontalDivider(thickness = Dp.Hairline)
 

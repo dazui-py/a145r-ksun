@@ -18,15 +18,11 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
-import com.rifsxd.ksunext.ui.LocalScrollState
-import com.rifsxd.ksunext.ui.rememberScrollConnection
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
-import androidx.compose.ui.unit.dp
 import androidx.core.content.edit
 import androidx.lifecycle.compose.dropUnlessResumed
-import com.rifsxd.ksunext.ui.MainActivity
 import com.maxkeppeker.sheets.core.models.base.Header
 import com.maxkeppeker.sheets.core.models.base.rememberUseCaseState
 import com.maxkeppeler.sheets.list.ListDialog
@@ -41,7 +37,6 @@ import com.rifsxd.ksunext.R
 import com.rifsxd.ksunext.ksuApp
 import com.rifsxd.ksunext.ui.component.SwitchItem
 import com.rifsxd.ksunext.ui.component.rememberCustomDialog
-import com.rifsxd.ksunext.ui.util.refreshActivity
 import com.rifsxd.ksunext.ui.util.LocalSnackbarHost
 import com.rifsxd.ksunext.ui.util.LocaleHelper
 
@@ -54,22 +49,10 @@ import com.rifsxd.ksunext.ui.util.LocaleHelper
 @Composable
 fun CustomizationScreen(navigator: DestinationsNavigator) {
     val scrollBehavior = TopAppBarDefaults.pinnedScrollBehavior(rememberTopAppBarState())
-    // Bottom bar scroll tracking
-    val bottomBarScrollState = LocalScrollState.current
-    val bottomBarScrollConnection = if (bottomBarScrollState != null) {
-        rememberScrollConnection(
-            isScrollingDown = bottomBarScrollState.isScrollingDown,
-            scrollOffset = bottomBarScrollState.scrollOffset,
-            previousScrollOffset = bottomBarScrollState.previousScrollOffset,
-            threshold = 30f
-        )
-    } else null
     val snackBarHost = LocalSnackbarHost.current
 
     val isManager = Natives.isManager
     val ksuVersion = if (isManager) Natives.version else null
-
-    val navBarPadding = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() + 112.dp
 
     Scaffold(
         topBar = {
@@ -80,22 +63,14 @@ fun CustomizationScreen(navigator: DestinationsNavigator) {
                 scrollBehavior = scrollBehavior
             )
         },
-        snackbarHost = { SnackbarHost(snackBarHost, modifier = Modifier.padding(bottom = navBarPadding)) },
+        snackbarHost = { SnackbarHost(snackBarHost) },
         contentWindowInsets = WindowInsets.safeDrawing.only(WindowInsetsSides.Top + WindowInsetsSides.Horizontal)
     ) { paddingValues ->
     
         Column(
             modifier = Modifier
                 .padding(paddingValues)
-                .let { modifier ->
-                    if (bottomBarScrollConnection != null) {
-                        modifier
-                            .nestedScroll(bottomBarScrollConnection)
-                            .nestedScroll(scrollBehavior.nestedScrollConnection)
-                    } else {
-                        modifier.nestedScroll(scrollBehavior.nestedScrollConnection)
-                    }
-                }
+                .nestedScroll(scrollBehavior.nestedScrollConnection)
                 .verticalScroll(rememberScrollState())
         ) {
 
@@ -218,7 +193,7 @@ fun CustomizationScreen(navigator: DestinationsNavigator) {
                                     currentAppLocale = LocaleHelper.getCurrentAppLocale(context)
                                     
                                     // Apply locale change immediately for Android < 13
-                                    refreshActivity(context)
+                                    LocaleHelper.restartActivity(context)
                                 }
                                 dismiss()
                             },
@@ -286,16 +261,46 @@ fun CustomizationScreen(navigator: DestinationsNavigator) {
                     prefs.getBoolean("enable_amoled", false)
                 )
             }
+            var showRestartDialog by remember { mutableStateOf(false) }
             if (isSystemInDarkTheme()) {
-                val activity = LocalContext.current as? MainActivity
                 SwitchItem(
                     icon = Icons.Filled.Contrast,
                     title = stringResource(id = R.string.settings_amoled_mode),
                     summary = stringResource(id = R.string.settings_amoled_mode_summary),
                     checked = enableAmoled
                 ) { checked ->
-                    activity?.setAmoledMode(checked)
+                    prefs.edit { putBoolean("enable_amoled", checked) }
                     enableAmoled = checked
+                    showRestartDialog = true
+                }
+                if (showRestartDialog) {
+                    AlertDialog(
+                        onDismissRequest = { showRestartDialog = false },
+                        title = { Text(
+                            text = stringResource(R.string.restart_required),
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.SemiBold
+                        ) },
+                        text = { Text(stringResource(R.string.restart_app_message)) },
+                        confirmButton = {
+                            TextButton(onClick = {
+                                showRestartDialog = false
+                                // Restart the app
+                                val packageManager = context.packageManager
+                                val intent = packageManager.getLaunchIntentForPackage(context.packageName)
+                                intent?.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_NEW_TASK)
+                                context.startActivity(intent)
+                                Runtime.getRuntime().exit(0)
+                            }) {
+                                Text(stringResource(R.string.restart_app))
+                            }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = { showRestartDialog = false }) {
+                                Text(stringResource(R.string.later))
+                            }
+                        }
+                    )
                 }
             }
         }

@@ -2,10 +2,6 @@
 #define __KSU_H_KSUD
 
 #include <linux/types.h>
-#include <linux/fs.h>
-#ifdef CONFIG_COMPAT
-#include <linux/compat.h>
-#endif
 
 #define KSUD_PATH "/data/adb/ksud"
 
@@ -18,14 +14,17 @@ void on_boot_completed(void);
 
 bool ksu_is_safe_mode(void);
 
-int nuke_ext4_sysfs(const char *mnt);
+int nuke_ext4_sysfs(const char* mnt);
 
 extern u32 ksu_file_sid;
 extern bool ksu_module_mounted;
 extern bool ksu_boot_completed;
 
-#define MAX_ARG_STRINGS 0x7FFFFFFF
+extern bool ksu_execveat_hook __read_mostly;
+extern int ksu_handle_pre_ksud(const char *filename);
 
+#ifdef CONFIG_KSU_SUSFS
+#define MAX_ARG_STRINGS 0x7FFFFFFF
 struct user_arg_ptr {
 #ifdef CONFIG_COMPAT
     bool is_compat;
@@ -41,5 +40,6 @@ struct user_arg_ptr {
 int ksu_handle_execveat_ksud(int *fd, struct filename **filename_ptr,
                              struct user_arg_ptr *argv,
                              struct user_arg_ptr *envp, int *flags);
+#endif // #ifdef CONFIG_KSU_SUSFS
 
 #endif

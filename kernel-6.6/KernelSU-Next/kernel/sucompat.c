@@ -1,38 +1,45 @@
-#include <linux/compiler_types.h>
 #include <linux/preempt.h>
 #include <linux/printk.h>
 #include <linux/mm.h>
-#include <linux/pgtable.h>
 #include <linux/uaccess.h>
 #include <asm/current.h>
 #include <linux/cred.h>
 #include <linux/fs.h>
 #include <linux/types.h>
 #include <linux/version.h>
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)
+#include <linux/pgtable.h>
+#endif
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 14, 0)
+#include <linux/compiler_types.h>
+#include <linux/compiler.h>
+#endif
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 11, 0)
 #include <linux/sched/task_stack.h>
+#else
+#include <linux/sched.h>
+#endif
 #include <linux/ptrace.h>
+#ifdef CONFIG_KSU_SUSFS
 #include <linux/susfs_def.h>
 #include <linux/namei.h>
-#include <linux/minmax.h>
+#include "selinux/selinux.h"
+#include "objsec.h"
+#endif // #ifdef CONFIG_KSU_SUSFS
+
+#include "objsec.h"
 
 #include "allowlist.h"
 #include "feature.h"
 #include "klog.h" // IWYU pragma: keep
 #include "ksud.h"
+#include "kernel_compat.h"
 #include "sucompat.h"
 #include "app_profile.h"
 #include "util.h"
-#include "selinux/selinux.h"
-#include "adb_root.h"
-
-extern void write_sulog(uint8_t sym);
 
 #define SU_PATH "/system/bin/su"
 #define SH_PATH "/system/bin/sh"
-
-static const char sh_path[] = SH_PATH;
-static const char su_path[] = SU_PATH;
-static const char ksud_path[] = KSUD_PATH;
 
 bool ksu_su_compat_enabled __read_mostly = true;
 
@@ -80,20 +87,26 @@ static char __user *ksud_user_path(void)
 	return userspace_stack_buffer(ksud_path, sizeof(ksud_path));
 }
 
+#ifndef CONFIG_KSU_SUSFS
 int ksu_handle_faccessat(int *dfd, const char __user **filename_user,
-                int *mode, int *__unused_flags)
+		int *mode, int *__unused_flags)
 {
-        char path[sizeof(su_path) + 1] = {0};
+	const char su[] = SU_PATH;
 
-        strncpy_from_user(path, *filename_user, sizeof(path));
+	if (!ksu_is_allow_uid_for_current(current_uid().val)) {
+		return 0;
+	}
 
-        if (unlikely(!memcmp(path, su_path, sizeof(su_path)))) {
-                write_sulog('a');
-                pr_info("faccessat su->sh!\n");
-                *filename_user = sh_user_path();
-        }
+	char path[sizeof(su) + 1];
+	memset(path, 0, sizeof(path));
+	strncpy_from_user_nofault(path, *filename_user, sizeof(path));
 
-        return 0;
+	if (unlikely(!memcmp(path, su, sizeof(su)))) {
+		pr_info("faccessat su->sh!\n");
+		*filename_user = sh_user_path();
+	}
+
+	return 0;
 }
 
 int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags)
@@ -113,11 +126,10 @@ int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags)
 	memset(path, 0, sizeof(path));
 	strncpy_from_user_nofault(path, *filename_user, sizeof(path));
 
-    if (unlikely(!memcmp(path, su, sizeof(su)))) {
-        write_sulog('s');
-        pr_info("newfstatat su->sh!\n");
-        *filename_user = sh_user_path();
-    }
+	if (unlikely(!memcmp(path, su, sizeof(su)))) {
+		pr_info("newfstatat su->sh!\n");
+		*filename_user = sh_user_path();
+	}
 
 	return 0;
 }
@@ -164,15 +176,240 @@ int ksu_handle_execve_sucompat(const char __user **filename_user,
 	if (likely(memcmp(path, su, sizeof(su))))
 		return 0;
 
-    write_sulog('x');
-
-    pr_info("sys_execve su found\n");
-    *filename_user = ksud_user_path();
+	pr_info("sys_execve su found\n");
+	*filename_user = ksud_user_path();
 
 	escape_with_root_profile();
 
 	return 0;
 }
+
+int ksu_handle_execveat_sucompat(int *fd, struct filename **filename_ptr,
+				 void *__never_use_argv, void *__never_use_envp,
+				 int *__never_use_flags)
+{
+	struct filename *filename;
+	const char su[] = SU_PATH;
+	static const char ksud_path[] = KSUD_PATH;
+
+	if (unlikely(!filename_ptr))
+		return 0;
+
+	filename = *filename_ptr;
+	if (IS_ERR(filename))
+		return 0;
+
+	if (likely(memcmp(filename->name, su, sizeof(su))))
+		return 0;
+
+	pr_info("do_execveat_common su found\n");
+	memcpy((void *)filename->name, ksud_path, sizeof(ksud_path));
+
+	escape_with_root_profile();
+
+	return 0;
+}
+
+int __ksu_handle_devpts(struct inode *inode)
+{
+#ifndef KSU_KPROBES_HOOK
+	if (!ksu_su_compat_enabled)
+		return 0;
+#endif
+
+	if (!current->mm) {
+		return 0;
+	}
+
+	uid_t uid = current_uid().val;
+	if (uid % 100000 < 10000) {
+		// not untrusted_app, ignore it
+		return 0;
+	}
+
+	if (likely(!ksu_is_allow_uid(uid)))
+		return 0;
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 1, 0) || defined(KSU_OPTIONAL_SELINUX_INODE)
+	struct inode_security_struct *sec = selinux_inode(inode);
+#else
+	struct inode_security_struct *sec = (struct inode_security_struct *)inode->i_security;
+#endif
+
+	if (ksu_file_sid && sec)
+		sec->sid = ksu_file_sid;
+	return 0;
+}
+#else
+static const char sh_path[] = SH_PATH;
+static const char su_path[] = SU_PATH;
+static const char ksud_path[] = KSUD_PATH;
+
+extern bool ksu_kernel_umount_enabled;
+
+int ksu_handle_execveat_init(struct filename *filename)
+{
+	if (current->pid != 1 && is_init(get_current_cred())) {
+		if (likely(strstr(filename->name, "/app_process") == NULL && strstr(filename->name, "/adbd") == NULL)) {
+            		pr_info("hook_manager: unmark %d exec %s\n", current->pid, filename->name);
+			susfs_set_current_proc_umounted();
+		}
+        	return 0;
+	}
+	return 1;
+}
+
+// the call from execve_handler_pre won't provided correct value for __never_use_argument, use them after fix execve_handler_pre, keeping them for consistence for manually patched code
+int ksu_handle_execveat_sucompat(int *fd, struct filename **filename_ptr,
+                 void *__never_use_argv, void *__never_use_envp,
+                 int *__never_use_flags)
+{
+    struct filename *filename;
+
+    if (unlikely(!filename_ptr))
+        return 0;
+
+    filename = *filename_ptr;
+    if (IS_ERR(filename)) {
+        return 0;
+    }
+
+    if (!ksu_handle_execveat_init(filename)) {
+        return 0;
+    }
+
+    if (likely(memcmp(filename->name, su_path, sizeof(su_path))))
+        return 0;
+
+    pr_info("ksu_handle_execveat_sucompat: su found\n");
+    memcpy((void *)filename->name, ksud_path, sizeof(ksud_path));
+
+    escape_with_root_profile();
+
+    return 0;
+}
+
+int __ksu_handle_devpts(struct inode *inode)
+{
+#ifndef KSU_KPROBES_HOOK
+	if (!ksu_su_compat_enabled)
+		return 0;
+#endif
+
+	if (!current->mm) {
+		return 0;
+	}
+
+	uid_t uid = current_uid().val;
+	if (uid % 100000 < 10000) {
+		// not untrusted_app, ignore it
+		return 0;
+	}
+
+	if (likely(!ksu_is_allow_uid(uid)))
+		return 0;
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 1, 0) || defined(KSU_OPTIONAL_SELINUX_INODE)
+	struct inode_security_struct *sec = selinux_inode(inode);
+#else
+	struct inode_security_struct *sec = (struct inode_security_struct *)inode->i_security;
+#endif
+
+	if (ksu_file_sid && sec)
+		sec->sid = ksu_file_sid;
+	return 0;
+}
+
+int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv,
+            void *envp, int *flags)
+{
+    if (ksu_handle_execveat_ksud(fd, filename_ptr, argv, envp, flags)) {
+        return 0;
+    }
+    return ksu_handle_execveat_sucompat(fd, filename_ptr, argv, envp,
+                        flags);
+}
+
+int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode,
+             int *__unused_flags)
+{
+    char path[sizeof(su_path) + 1] = {0};
+
+    strncpy_from_user_nofault(path, *filename_user, sizeof(path));
+
+    if (unlikely(!memcmp(path, su_path, sizeof(su_path)))) {
+        pr_info("ksu_handle_faccessat: su->sh!\n");
+        *filename_user = sh_user_path();
+    }
+
+    return 0;
+
+    return 0;
+}
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0)
+int ksu_handle_stat(int *dfd, struct filename **filename, int *flags) {
+    if (unlikely(IS_ERR(*filename) || (*filename)->name == NULL)) {
+        return 0;
+    }
+
+    if (likely(memcmp((*filename)->name, su_path, sizeof(su_path)))) {
+        return 0;
+    }
+
+    pr_info("ksu_handle_stat: su->sh!\n");
+    memcpy((void *)((*filename)->name), sh_path, sizeof(sh_path));
+    return 0;
+}
+#else
+int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags)
+{
+    if (unlikely(!filename_user)) {
+        return 0;
+    }
+
+    char path[sizeof(su_path) + 1] = {0};
+
+    strncpy_from_user_nofault(path, *filename_user, sizeof(path));
+
+    if (unlikely(!memcmp(path, su_path, sizeof(su_path)))) {
+        pr_info("ksu_handle_stat: su->sh!\n");
+        *filename_user = sh_user_path();
+    }
+
+    return 0;
+}
+#endif // #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0)
+
+int ksu_handle_devpts(struct inode *inode)
+{
+    if (!current->mm) {
+        return 0;
+    }
+
+    uid_t uid = current_uid().val;
+    if (uid % 100000 < 10000) {
+        // not untrusted_app, ignore it
+        return 0;
+    }
+
+    if (!__ksu_is_allow_uid_for_current(uid))
+        return 0;
+
+    if (ksu_file_sid) {
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 1, 0) || defined(KSU_OPTIONAL_SELINUX_INODE)
+		struct inode_security_struct *sec = selinux_inode(inode);
+#else
+		struct inode_security_struct *sec = (struct inode_security_struct *)inode->i_security;
+#endif
+        if (sec) {
+            sec->sid = ksu_file_sid;
+        }
+    }
+
+    return 0;
+}
+#endif // #ifndef CONFIG_KSU_SUSFS
 
 // sucompat: permitted process can execute 'su' to gain root access.
 void ksu_sucompat_init()

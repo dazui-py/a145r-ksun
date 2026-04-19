@@ -1,6 +1,5 @@
 package com.rifsxd.ksunext.ui.screen
 
-import android.content.Context
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -17,12 +16,9 @@ import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
-import com.rifsxd.ksunext.ui.LocalScrollState
-import com.rifsxd.ksunext.ui.rememberScrollConnection
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -32,7 +28,6 @@ import androidx.lifecycle.compose.dropUnlessResumed
 import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
-import androidx.compose.material3.ListItemDefaults
 import com.dergoogler.mmrl.ui.component.LabelItem
 import com.dergoogler.mmrl.ui.component.LabelItemDefaults
 import com.ramcosta.composedestinations.annotation.Destination
@@ -54,16 +49,6 @@ fun SuperUserScreen(navigator: DestinationsNavigator) {
     val scope = rememberCoroutineScope()
     val scrollBehavior = TopAppBarDefaults.pinnedScrollBehavior(rememberTopAppBarState())
     val listState = rememberLazyListState()
-    // Bottom bar scroll tracking
-    val bottomBarScrollState = LocalScrollState.current
-    val bottomBarScrollConnection = if (bottomBarScrollState != null) {
-        rememberScrollConnection(
-            isScrollingDown = bottomBarScrollState.isScrollingDown,
-            scrollOffset = bottomBarScrollState.scrollOffset,
-            previousScrollOffset = bottomBarScrollState.previousScrollOffset,
-            threshold = 30f
-        )
-    } else null
 
     LaunchedEffect(navigator) {
         viewModel.search = ""
@@ -76,11 +61,20 @@ fun SuperUserScreen(navigator: DestinationsNavigator) {
         topBar = {
             SearchAppBar(
                 title = {
-                    Text(
-                        text = stringResource(R.string.superuser),
-                        style = MaterialTheme.typography.titleLarge,
-                        fontWeight = FontWeight.Black,
-                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        IconButton(onClick = dropUnlessResumed { navigator.popBackStack() }) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                                contentDescription = null
+                            )
+                        }
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            text = stringResource(R.string.superuser),
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.Black,
+                        )
+                    }
                 },
                 searchText = viewModel.search,
                 onSearchTextChange = { viewModel.search = it },
@@ -134,33 +128,13 @@ fun SuperUserScreen(navigator: DestinationsNavigator) {
             },
             isRefreshing = viewModel.isRefreshing
         ) {
-            val navBarPadding = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() + 112.dp
-
             LazyColumn(
                 state = listState,
                 modifier = Modifier
                     .fillMaxSize()
-                    .let { modifier ->
-                        if (bottomBarScrollConnection != null) {
-                            modifier
-                                .nestedScroll(bottomBarScrollConnection)
-                                .nestedScroll(scrollBehavior.nestedScrollConnection)
-                        } else {
-                            modifier.nestedScroll(scrollBehavior.nestedScrollConnection)
-                        }
-                    },
-                verticalArrangement = Arrangement.spacedBy(16.dp),
-                contentPadding = PaddingValues(
-                    start = 16.dp,
-                    top = 16.dp,
-                    end = 16.dp,
-                    bottom = 16.dp + navBarPadding
-                )
+                    .nestedScroll(scrollBehavior.nestedScrollConnection)
             ) {
-                items(
-                    viewModel.appList.filter { it.packageName != ksuApp.packageName },
-                    key = { it.packageName + it.uid }
-                ) { app ->
+                items(viewModel.appList.filter { it.packageName != ksuApp.packageName }, key = { it.packageName + it.uid }) { app ->
                     AppItem(app) {
                         navigator.navigate(AppProfileScreenDestination(app))
                     }
@@ -176,93 +150,74 @@ private fun AppItem(
     app: SuperUserViewModel.AppInfo,
     onClickListener: () -> Unit,
 ) {
-    val context = LocalContext.current
-    val prefs = context.getSharedPreferences("settings", Context.MODE_PRIVATE)
-    val developerOptionsEnabled = prefs.getBoolean("enable_developer_options", false)
-
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(MaterialTheme.shapes.medium)
-            .clickable(onClick = onClickListener)
-    ) {
-        ListItem(
-            modifier = Modifier.fillMaxWidth(),
-            colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-            headlineContent = {
+    ListItem(
+        modifier = Modifier.clickable(onClick = onClickListener),
+        headlineContent = { Text(
+            text = app.label,
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.SemiBold,
+        ) },
+        supportingContent = {
+            Column {
                 Text(
-                    text = app.label,
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold,
+                    text = app.packageName,
+                    style = MaterialTheme.typography.bodySmall
                 )
-            },
-            supportingContent = {
-                Column {
-                    Text(
-                        text = app.packageName,
-                        style = MaterialTheme.typography.bodySmall
-                    )
 
-                    Spacer(modifier = Modifier.height(4.dp))
-
-                    FlowRow(
-                        horizontalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        if (app.allowSu) {
-                            val rootLabel = if (developerOptionsEnabled) {
-                                "ROOT | UID: ${app.uid}"
-                            } else {
-                                "ROOT"
-                            }
+                Spacer(modifier = Modifier.height(4.dp))
+                
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    if (app.allowSu) {
+                        LabelItem(
+                            text = "ROOT",
+                        )
+                    } else {
+                        if (Natives.uidShouldUmount(app.uid)) {
                             LabelItem(
-                                text = rootLabel,
-                            )
-                        } else {
-                            if (Natives.uidShouldUmount(app.uid)) {
-                                LabelItem(
-                                    text = "UMOUNT",
-                                    style = LabelItemDefaults.style.copy(
-                                        containerColor = MaterialTheme.colorScheme.secondaryContainer,
-                                        contentColor = MaterialTheme.colorScheme.onSecondaryContainer
-                                    )
-                                )
-                            }
-                        }
-                        if (app.hasCustomProfile) {
-                            LabelItem(
-                                text = "CUSTOM",
+                                text = "UMOUNT",
                                 style = LabelItemDefaults.style.copy(
-                                    containerColor = MaterialTheme.colorScheme.tertiaryContainer,
-                                    contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
-                                )
-                            )
-                        } else if (!app.allowSu && !Natives.uidShouldUmount(app.uid)) {
-                            LabelItem(
-                                text = "DEFAULT",
-                                style = LabelItemDefaults.style.copy(
-                                    containerColor = MaterialTheme.colorScheme.primaryContainer,
-                                    contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                                    containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                                    contentColor = MaterialTheme.colorScheme.onSecondaryContainer
                                 )
                             )
                         }
                     }
+                    if (app.hasCustomProfile) {
+                        LabelItem(
+                            text = "CUSTOM",
+                            style = LabelItemDefaults.style.copy(
+                                containerColor = MaterialTheme.colorScheme.tertiaryContainer,
+                                contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
+                            )
+                        )
+                    } else if (!app.allowSu && !Natives.uidShouldUmount(app.uid)) {
+                        LabelItem(
+                            text = "DEFAULT",
+                            style = LabelItemDefaults.style.copy(
+                                containerColor = MaterialTheme.colorScheme.primaryContainer,
+                                contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                            )
+                        )
+                    }
                 }
-            },
-            leadingContent = {
-                AsyncImage(
-                    model = ImageRequest.Builder(LocalContext.current)
-                        .data(app.packageInfo)
-                        .crossfade(true)
-                        .build(),
-                    contentDescription = app.label,
-                    modifier = Modifier
-                        .padding(4.dp)
-                        .width(48.dp)
-                        .height(48.dp)
-                )
-            },
-        )
-    }
+            }
+        },
+        leadingContent = {
+            AsyncImage(
+                model = ImageRequest.Builder(LocalContext.current)
+                    .data(app.packageInfo)
+                    .crossfade(true)
+                    .build(),
+                contentDescription = app.label,
+                modifier = Modifier
+                    .padding(4.dp)
+                    .width(48.dp)
+                    .height(48.dp)
+            )
+        },
+    )
 }
 
 @Composable

@@ -1,25 +1,18 @@
 package com.rifsxd.ksunext.ui.screen
 
-import android.annotation.SuppressLint
 import android.content.Context
-import android.content.Intent
-import android.content.pm.ShortcutInfo
 import android.os.Build
 import android.os.PowerManager
 import android.system.Os
 import android.widget.Toast
 import androidx.annotation.StringRes
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.*
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
-import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -39,6 +32,8 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
@@ -46,9 +41,6 @@ import androidx.compose.foundation.verticalScroll
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.distinctUntilChanged
 import androidx.core.content.pm.PackageInfoCompat
-import androidx.core.content.pm.ShortcutInfoCompat
-import androidx.core.content.pm.ShortcutManagerCompat
-import androidx.core.graphics.drawable.IconCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.dergoogler.mmrl.ui.component.LabelItem
 import com.dergoogler.mmrl.ui.component.LabelItemDefaults
@@ -65,18 +57,12 @@ import com.rifsxd.ksunext.R
 import com.rifsxd.ksunext.ui.component.rememberConfirmDialog
 import com.rifsxd.ksunext.ui.theme.ORANGE
 import com.rifsxd.ksunext.ui.util.*
-import com.rifsxd.ksunext.ui.webui.WebUIActivity
-import com.rifsxd.ksunext.ui.util.restartActivity
 import com.rifsxd.ksunext.ui.util.module.LatestVersionInfo
 import com.rifsxd.ksunext.ui.viewmodel.ModuleViewModel
-import com.rifsxd.ksunext.ui.LocalScrollState 
-import com.rifsxd.ksunext.ui.trackScroll 
-import com.rifsxd.ksunext.ui.rememberScrollConnection
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import java.util.*
-import androidx.core.net.toUri
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Destination<RootGraph>(start = true)
@@ -93,25 +79,16 @@ fun HomeScreen(navigator: DestinationsNavigator) {
     val context = LocalContext.current
     val prefs = context.getSharedPreferences("settings", Context.MODE_PRIVATE)
     val developerOptionsEnabled = prefs.getBoolean("enable_developer_options", false)
-    
-    // Get scroll state for bottom bar tracking
-    val bottomBarScrollState = LocalScrollState.current
-    
-    // Create scroll connection for bottom bar
-    val bottomBarScrollConnection = if (bottomBarScrollState != null) {
-        rememberScrollConnection(
-            isScrollingDown = bottomBarScrollState.isScrollingDown,
-            scrollOffset = bottomBarScrollState.scrollOffset,
-            previousScrollOffset = bottomBarScrollState.previousScrollOffset,
-            threshold = 30f
-        )
-    } else null
+
 
     Scaffold(
         topBar = {
             TopBar(
                 kernelVersion,
                 ksuVersion,
+                onSettingsClick = {
+                    navigator.navigate(SettingScreenDestination)
+                },
                 onInstallClick = {
                     navigator.navigate(InstallScreenDestination)
                 },
@@ -123,24 +100,13 @@ fun HomeScreen(navigator: DestinationsNavigator) {
         Column(
             modifier = Modifier
                 .padding(innerPadding)
-                // Chain scroll connections - bottom bar tracking first, then topbar behavior
-                .let { modifier ->
-                    if (bottomBarScrollConnection != null) {
-                        modifier
-                            .nestedScroll(bottomBarScrollConnection)
-                            .nestedScroll(scrollBehavior.nestedScrollConnection)
-                    } else {
-                        modifier.nestedScroll(scrollBehavior.nestedScrollConnection)
-                    }
-                }
+                .nestedScroll(scrollBehavior.nestedScrollConnection)
                 .verticalScroll(rememberScrollState())
-                .padding(top = 16.dp)
-                .padding(bottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() + 112.dp)
                 .padding(horizontal = 16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             val lkmMode = ksuVersion?.let {
-                Natives.isLkmMode
+                if (kernelVersion.isGKI()) Natives.isLkmMode else null
             }
 
             StatusCard(kernelVersion, ksuVersion, lkmMode, ksuVersionTag = ksuVersionTag) {
@@ -155,14 +121,10 @@ fun HomeScreen(navigator: DestinationsNavigator) {
                     horizontalArrangement = Arrangement.spacedBy(14.dp)
                 ) {
                     Box(modifier = Modifier.weight(1f)) {
-                        SuperuserCard(onClick = {
-                            navigator.navigate(SuperUserScreenDestination)
-                        })
+                        SuperuserCard(onClick = { navigator.navigate(SuperUserScreenDestination) })
                     }
                     Box(modifier = Modifier.weight(1f)) {
-                        ModuleCard(onClick = {
-                            navigator.navigate(ModuleScreenDestination)
-                        })
+                        ModuleCard(onClick = { navigator.navigate(ModuleScreenDestination) })
                     }
                 }
             }
@@ -179,7 +141,11 @@ fun HomeScreen(navigator: DestinationsNavigator) {
                 WarningCard(
                     stringResource(id = R.string.grant_root_failed),
                     onClick = {
-                        restartActivity(context)
+                        val pm = context.packageManager
+                        val intent = pm.getLaunchIntentForPackage(context.packageName)
+                        intent?.addFlags(android.content.Intent.FLAG_ACTIVITY_CLEAR_TOP or android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                        context.startActivity(intent)
+                        Runtime.getRuntime().exit(0)
                     }
                 )
             }
@@ -312,18 +278,22 @@ private fun ModuleCard(onClick: (() -> Unit)? = null) {
                                 transitionSpec = {
                                     slideInHorizontally { -it } + fadeIn() togetherWith
                                             slideOutHorizontally { it } + fadeOut()
-                                }
+                                },
+                                label = "UpdateAnimation"
                             ) { target ->
                                 when (target) {
                                     1 -> Text(
-                                        text = stringResource(id = R.string.home_module_update_available),
+                                        text = "Update!",
                                         style = MaterialTheme.typography.titleMedium,
-                                        fontWeight = FontWeight.SemiBold
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = ORANGE
                                     )
                                     2 -> Text(
                                         text = buildAnnotatedString {
                                             append(moduleUpdateCount.toString())
-                                            append("*")
+                                            withStyle(SpanStyle(color = ORANGE)) {
+                                                append("*")
+                                            }
                                         },
                                         style = MaterialTheme.typography.titleMedium,
                                         fontWeight = FontWeight.SemiBold
@@ -342,12 +312,9 @@ private fun ModuleCard(onClick: (() -> Unit)? = null) {
 fun UpdateCard() {
     val context = LocalContext.current
     val latestVersionInfo = LatestVersionInfo()
-    
-    var preferSpoofed by remember { mutableStateOf(false) }
-    
-    val newVersion by produceState(initialValue = latestVersionInfo, key1 = preferSpoofed) {
+    val newVersion by produceState(initialValue = latestVersionInfo) {
         value = withContext(Dispatchers.IO) {
-            checkNewVersion(preferSpoofed)
+            checkNewVersion()
         }
     }
 
@@ -368,175 +335,41 @@ fun UpdateCard() {
     ) {
         val updateDialog = rememberConfirmDialog(onConfirm = { uriHandler.openUri(newVersionUrl) })
         ElevatedCard(
-            modifier = Modifier.clickable {
-                if (changelog.isEmpty()) {
-                    uriHandler.openUri(newVersionUrl)
-                } else {
-                    updateDialog.showConfirm(
-                        title = title,
-                        content = changelog,
-                        markdown = true,
-                        confirm = updateText
-                    )
-                }
-            },
             colors = CardDefaults.elevatedCardColors(
                 containerColor = MaterialTheme.colorScheme.primary
             )
         ) {
-            Column(
+            Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(24.dp)
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(
-                        imageVector = Icons.Filled.Update,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onPrimary,
-                        modifier = Modifier.padding(end = 20.dp)
-                    )
-                    Text(
-                        text = if (!newVersionTag.isNullOrEmpty()) {
-                            stringResource(id = R.string.new_version_available, newVersionTag, newVersionCode)
+                    .clickable {
+                        if (changelog.isEmpty()) {
+                            uriHandler.openUri(newVersionUrl)
                         } else {
-                            stringResource(id = R.string.new_version_available, "", newVersionCode)
-                        },
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onPrimary
-                    )
-                    Spacer(modifier = Modifier.weight(1f))
-                    Icon(
-                        imageVector = Icons.Filled.ArrowForward,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onPrimary
-                    )
-                }
-                
-                Spacer(modifier = Modifier.height(20.dp))
-                
-                Column(modifier = Modifier.fillMaxWidth()) {
-                    Text(
-                        text = stringResource(id = R.string.select_build_type),
-                        style = MaterialTheme.typography.labelMedium,
-                        modifier = Modifier.padding(bottom = 12.dp)
-                    )
-                    
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(48.dp)
-                            .background(
-                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.12f),
-                                shape = RoundedCornerShape(12.dp)
+                            updateDialog.showConfirm(
+                                title = title,
+                                content = changelog,
+                                markdown = true,
+                                confirm = updateText
                             )
-                            .padding(4.dp),
-                        horizontalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        if (!preferSpoofed) {
-                            FilledTonalButton(
-                                onClick = { preferSpoofed = false },
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .fillMaxHeight(),
-                                colors = ButtonDefaults.filledTonalButtonColors(
-                                    containerColor = MaterialTheme.colorScheme.primaryContainer,
-                                    contentColor = MaterialTheme.colorScheme.onPrimaryContainer
-                                ),
-                                shape = RoundedCornerShape(10.dp)
-                            ) {
-                                Row(
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Filled.Verified,
-                                        contentDescription = null,
-                                        modifier = Modifier.size(18.dp)
-                                    )
-                                    Text(stringResource(id = R.string.main), style = MaterialTheme.typography.labelMedium)
-                                }
-                            }
-                        } else {
-                            FilledTonalButton(
-                                onClick = { preferSpoofed = false },
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .fillMaxHeight(),
-                                colors = ButtonDefaults.filledTonalButtonColors(
-                                    containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.69f),
-                                    contentColor = MaterialTheme.colorScheme.onSecondaryContainer
-                                ),
-                                shape = RoundedCornerShape(10.dp)
-                            ) {
-                                Row(
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Filled.Verified,
-                                        contentDescription = null,
-                                        modifier = Modifier.size(18.dp)
-                                    )
-                                    Text(stringResource(id = R.string.main), style = MaterialTheme.typography.labelMedium)
-                                }
-                            }
-                        }
-                        
-                        if (preferSpoofed) {
-                            FilledTonalButton(
-                                onClick = { preferSpoofed = true },
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .fillMaxHeight(),
-                                colors = ButtonDefaults.filledTonalButtonColors(
-                                    containerColor = MaterialTheme.colorScheme.primaryContainer,
-                                    contentColor = MaterialTheme.colorScheme.onPrimaryContainer
-                                ),
-                                shape = RoundedCornerShape(10.dp)
-                            ) {
-                                Row(
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Filled.VisibilityOff,
-                                        contentDescription = null,
-                                        modifier = Modifier.size(18.dp)
-                                    )
-                                    Text(stringResource(id = R.string.spoofed), style = MaterialTheme.typography.labelMedium)
-                                }
-                            }
-                        } else {
-                            FilledTonalButton(
-                                onClick = { preferSpoofed = true },
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .fillMaxHeight(),
-                                colors = ButtonDefaults.filledTonalButtonColors(
-                                    containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.69f),
-                                    contentColor = MaterialTheme.colorScheme.onSecondaryContainer
-                                ),
-                                shape = RoundedCornerShape(10.dp)
-                            ) {
-                                Row(
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Filled.VisibilityOff,
-                                        contentDescription = null,
-                                        modifier = Modifier.size(18.dp)
-                                    )
-                                    Text(stringResource(id = R.string.spoofed), style = MaterialTheme.typography.labelMedium)
-                                }
-                            }
                         }
                     }
-                }
+                    .padding(24.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.Update,
+                    contentDescription = null,
+                    modifier = Modifier.padding(end = 20.dp)
+                )
+                Text(
+                    text = if (!newVersionTag.isNullOrEmpty()) {
+                        stringResource(id = R.string.new_version_available, newVersionTag, newVersionCode)
+                    } else {
+                        stringResource(id = R.string.new_version_available, "", newVersionCode)
+                    },
+                    style = MaterialTheme.typography.bodyMedium
+                )
             }
         }
     }
@@ -570,6 +403,7 @@ private fun TopBar(
     kernelVersion: KernelVersion,
     ksuVersion: Int?,
     onInstallClick: () -> Unit,
+    onSettingsClick: () -> Unit,
     scrollBehavior: TopAppBarScrollBehavior? = null
 ) {
     var isSpinning by remember { mutableStateOf(false) }
@@ -585,20 +419,12 @@ private fun TopBar(
         }
     )
 
-    val moduleViewModel: ModuleViewModel = viewModel()
-    
-    val webUILauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.StartActivityForResult()
-    ) { }
-
-    val context = LocalContext.current
-
     LaunchedEffect(Unit) {
         isSpinning = true
         rotationTarget += 360f * 6
     }
 
-        TopAppBar(
+    TopAppBar(
         title = {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
@@ -624,17 +450,19 @@ private fun TopBar(
                 Text(
                     text = stringResource(R.string.app_name),
                     style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.Black
+                    fontWeight = FontWeight.Black,
                 )
             }
         },
         actions = {
             if (ksuVersion != null) {
-                IconButton(onClick = onInstallClick) {
-                    Icon(
-                        imageVector = Icons.Filled.Archive,
-                        contentDescription = stringResource(id = R.string.install)
-                    )
+                if (kernelVersion.isGKI()) {
+                    IconButton(onClick = onInstallClick) {
+                        Icon(
+                            imageVector = Icons.Filled.Archive,
+                            contentDescription = stringResource(id = R.string.install)
+                        )
+                    }
                 }
             }
 
@@ -665,6 +493,12 @@ private fun TopBar(
                         RebootDropdownItem(id = R.string.reboot_edl, reason = "edl")
                     }
                 }
+            }
+            IconButton(onClick = onSettingsClick) {
+                Icon(
+                    imageVector = Icons.Filled.Settings,
+                    contentDescription = stringResource(id = R.string.settings)
+                )
             }
         },
         windowInsets = WindowInsets.safeDrawing.only(WindowInsetsSides.Top + WindowInsetsSides.Horizontal),
@@ -705,20 +539,26 @@ private fun StatusCard(
                         intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
                         if (ksuVersion != null) {
                             context.startActivity(intent)
-                        } else {
+                        } else if (kernelVersion.isGKI()) {
                             onClickInstall()
+                        } else {
+                            Toast.makeText(context, "Something weird happened... 🤔", Toast.LENGTH_SHORT).show()
                         }
-                    } else if (ksuVersion == null) {
+                    } else if (ksuVersion == null && kernelVersion.isGKI()) {
                         onClickInstall()
                     }
                 }
                 .padding(24.dp), verticalAlignment = Alignment.CenterVertically) {
             when {
                 ksuVersion != null -> {
-                    val workingMode = if (lkmMode == true || lkmMode == false) {
-                        val mode = if (lkmMode == true) "LKM" else "BUILT-IN"
-                        "$mode (" + kernelVersion.getKernelType() + ")"
-                    } else kernelVersion.getKernelType()
+                    val workingMode = when {
+                        lkmMode == true -> "LKM"
+                        lkmMode == false || kernelVersion.isGKI() -> "GKI2"
+                        lkmMode == null && kernelVersion.isULegacy() -> "U-LEGACY"
+                        lkmMode == null && kernelVersion.isLegacy() -> "LEGACY"
+                        lkmMode == null && kernelVersion.isGKI1() -> "GKI1"
+                        else -> "NON-STANDARD"
+                    }
 
                     Icon(
                         imageVector = Icons.Filled.CheckCircle,
@@ -876,7 +716,7 @@ private fun InfoCard(autoExpand: Boolean = false) {
         }
     }   
 
-    Card {
+    ElevatedCard {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -921,7 +761,7 @@ private fun InfoCard(autoExpand: Boolean = false) {
                     content = if (
                         developerOptionsEnabled
                     ) {
-                        "${managerVersion.first} (${managerVersion.second}) | UID: ${Natives.getManagerAppid()}"
+                        "${managerVersion.first} (${managerVersion.second}) | UID: ${Natives.getManagerUid()}"
                     } else {
                         "${managerVersion.first} (${managerVersion.second})"
                     },
@@ -946,35 +786,38 @@ private fun InfoCard(autoExpand: Boolean = false) {
 
                 if (ksuVersion != null) {
                     Spacer(Modifier.height(16.dp))
-                    
-                    val moduleViewModel: ModuleViewModel = viewModel()
-                    val meta = moduleViewModel.moduleList.firstOrNull {
-                        it.isMetaModule && it.enabled && !it.remove
-                    }
-
-                    val mountSystem = currentMountSystem()
-                        .ifBlank { stringResource(R.string.unavailable) }
-
-                    val content = listOfNotNull(
-                        mountSystem,
-                        meta?.name?.takeIf { it.isNotBlank() }
-                            ?: stringResource(R.string.home_not_installed),
-                        meta?.version?.takeIf { it.isNotBlank() }
-                    ).joinToString(" | ")
-
                     InfoCardItem(
                         label = stringResource(R.string.home_mount_system),
-                        content = content,
-                        icon = Icons.Filled.SettingsSuggest
+                        content = currentMountSystem().ifEmpty { stringResource(R.string.unavailable) },
+                        icon = Icons.Filled.SettingsSuggest,
                     )
 
                     if (Natives.isZygiskEnabled()) {
                         Spacer(Modifier.height(16.dp))
                         InfoCardItem(
                             label = stringResource(R.string.zygisk_status),
-                            content = "${stringResource(R.string.enabled)} | ${getZygiskImplementation("name")} | ${getZygiskImplementation("version")}",
+                            content = "${stringResource(R.string.enabled)} | ${getZygiskImplementation()} | ${getZygiskVersion()}",
                             icon = Icons.Filled.Vaccines
                         )
+                    }
+                }
+
+                if (!expanded) {
+                    Spacer(Modifier.height(16.dp))
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth(),
+                        horizontalArrangement = Arrangement.Center
+                    ) {
+                        IconButton(
+                            onClick = { expanded = true },
+                            modifier = Modifier.size(36.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.KeyboardArrowDown,
+                                contentDescription = "Show more"
+                            )
+                        }
                     }
                 }
 
@@ -1010,31 +853,82 @@ private fun InfoCard(autoExpand: Boolean = false) {
                         )
                     }
                 }
+            }
+        }
+    }
+}
 
-                Spacer(Modifier.height(16.dp))
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth(),
-                    horizontalArrangement = Arrangement.Center
-                ) {
-                    val rotationAngle by animateFloatAsState(
-                        targetValue = if (expanded) 180f else 0f,
-                        animationSpec = tween(durationMillis = 300)
-                    )
-                    
-                    IconButton(
-                        onClick = { expanded = !expanded },
-                        modifier = Modifier.size(36.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Filled.KeyboardArrowDown,
-                            contentDescription = if (expanded) "Show less" else "Show more",
-                            modifier = Modifier.graphicsLayer {
-                                rotationZ = rotationAngle
-                            }
-                        )
-                    }
+@Composable
+fun NextCard() {
+    val uriHandler = LocalUriHandler.current
+    val url = stringResource(R.string.home_next_kernelsu_repo)
+
+    ElevatedCard {
+
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable {
+                    uriHandler.openUri(url)
                 }
+                .padding(24.dp), verticalAlignment = Alignment.CenterVertically) {
+            Column {
+                Text(
+                    text = stringResource(R.string.home_next_kernelsu),
+                    style = MaterialTheme.typography.titleSmall
+                )
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    text = stringResource(R.string.home_next_kernelsu_body),
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun EXperimentalCard() {
+    /*val uriHandler = LocalUriHandler.current
+    val url = stringResource(R.string.home_experimental_kernelsu_repo)
+    */
+
+    ElevatedCard {
+
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                /*.clickable {
+                    uriHandler.openUri(url)
+                }
+                */
+                .padding(24.dp), verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column {
+                Text(
+                    text = stringResource(R.string.home_experimental_kernelsu),
+                    style = MaterialTheme.typography.titleSmall
+                )
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    text = stringResource(R.string.home_experimental_kernelsu_body),
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    text = stringResource(R.string.home_experimental_kernelsu_body_point_1),
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    text = stringResource(R.string.home_experimental_kernelsu_body_point_2),
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    text = stringResource(R.string.home_experimental_kernelsu_body_point_3),
+                    style = MaterialTheme.typography.bodyMedium
+                )
             }
         }
     }
@@ -1046,7 +940,7 @@ fun IssueReportCard() {
     val githubIssueUrl = stringResource(R.string.issue_report_github_link)
     val telegramUrl = stringResource(R.string.issue_report_telegram_link)
 
-    Card {
+    ElevatedCard {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -1088,30 +982,6 @@ fun IssueReportCard() {
     }
 }
 
-@SuppressLint("RestrictedApi")
-fun handleDynamicShortcuts(context: Context, moduleConfigs: List <Pair<ModuleViewModel.ModuleInfo, Int>>) {
-    ShortcutManagerCompat.removeAllDynamicShortcuts(context)
-
-    moduleConfigs.forEach { (module, iconRes) ->
-        val shortcut = ShortcutInfoCompat.Builder(context, module.id)
-            .setShortLabel(module.name)
-            .setLongLabel(module.name)
-            .setIcon(IconCompat.createWithResource(context, iconRes))
-            .setCategories(setOf(ShortcutInfo.SHORTCUT_CATEGORY_CONVERSATION))
-            .setIntent(
-                Intent(context, WebUIActivity::class.java).apply {
-                    action = Intent.ACTION_VIEW
-                    data = "kernelsu://webui/${module.id}".toUri()
-                    putExtra("id", module.id)
-                    putExtra("name", module.name)
-                }
-            )
-            .build()
-
-        ShortcutManagerCompat.pushDynamicShortcut(context, shortcut)
-    }
-}
-
 fun getManagerVersion(context: Context): Pair<String, Long> {
     val packageInfo = context.packageManager.getPackageInfo(context.packageName, 0)!!
     val versionCode = PackageInfoCompat.getLongVersionCode(packageInfo)
@@ -1135,7 +1005,7 @@ private fun WarningCardPreview() {
     Column {
         WarningCard(message = "Warning message")
         WarningCard(
-            message = "Warning message",
+            message = "Warning message ",
             MaterialTheme.colorScheme.outlineVariant,
             onClick = {})
     }

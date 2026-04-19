@@ -358,7 +358,7 @@ where
         if let Ok((_, statement)) = PolicyStatement::parse(trimmed_line) {
             statements.push(statement);
         } else if strict {
-            bail!("Failed to parse policy statement: {line}")
+            bail!("Failed to parse policy statement: {}", line)
         }
     }
     Ok(statements)
@@ -389,11 +389,11 @@ impl TryFrom<&str> for PolicyObject {
     fn try_from(s: &str) -> Result<Self> {
         anyhow::ensure!(s.len() <= SEPOLICY_MAX_LEN, "policy object too long");
         if s == "*" {
-            return Ok(Self::All);
+            return Ok(PolicyObject::All);
         }
         let mut buf = [0u8; SEPOLICY_MAX_LEN];
         buf[..s.len()].copy_from_slice(s.as_bytes());
-        Ok(Self::One(buf))
+        Ok(PolicyObject::One(buf))
     }
 }
 
@@ -668,7 +668,7 @@ struct FfiPolicy {
     sepol7: *const ffi::c_char,
 }
 
-const fn to_c_ptr(pol: &PolicyObject) -> *const ffi::c_char {
+fn to_c_ptr(pol: &PolicyObject) -> *const ffi::c_char {
     match pol {
         PolicyObject::None | PolicyObject::All => std::ptr::null(),
         PolicyObject::One(s) => s.as_ptr().cast::<ffi::c_char>(),
@@ -676,8 +676,8 @@ const fn to_c_ptr(pol: &PolicyObject) -> *const ffi::c_char {
 }
 
 impl From<AtomicStatement> for FfiPolicy {
-    fn from(policy: AtomicStatement) -> Self {
-        Self {
+    fn from(policy: AtomicStatement) -> FfiPolicy {
+        FfiPolicy {
             cmd: policy.cmd,
             subcmd: policy.subcmd,
             sepol1: to_c_ptr(&policy.sepol1),
@@ -691,6 +691,7 @@ impl From<AtomicStatement> for FfiPolicy {
     }
 }
 
+#[cfg(any(target_os = "linux", target_os = "android"))]
 fn apply_one_rule<'a>(statement: &'a PolicyStatement<'a>, strict: bool) -> Result<()> {
     let policies: Vec<AtomicStatement> = statement.try_into()?;
 
@@ -698,17 +699,22 @@ fn apply_one_rule<'a>(statement: &'a PolicyStatement<'a>, strict: bool) -> Resul
         let ffi_policy = FfiPolicy::from(policy);
         let cmd = crate::ksucalls::SetSepolicyCmd {
             cmd: 0,
-            arg: &raw const ffi_policy as u64,
+            arg: &ffi_policy as *const _ as u64,
         };
         if let Err(e) = crate::ksucalls::set_sepolicy(&cmd) {
-            log::warn!("apply rule {statement:?} failed: {e}");
+            log::warn!("apply rule {:?} failed: {}", statement, e);
             if strict {
-                return Err(anyhow::anyhow!("apply rule {statement:?} failed: {e}"));
+                return Err(anyhow::anyhow!("apply rule {:?} failed: {}", statement, e));
             }
         }
     }
 
     Ok(())
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
+fn apply_one_rule<'a>(_statement: &'a PolicyStatement<'a>, _strict: bool) -> Result<()> {
+    unimplemented!()
 }
 
 pub fn live_patch(policy: &str) -> Result<()> {

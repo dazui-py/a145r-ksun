@@ -11,7 +11,6 @@ use const_format::concatcp;
 use is_executable::is_executable;
 use java_properties::PropertiesIter;
 use log::{debug, info, warn};
-use regex_lite::Regex;
 
 use std::fs::{copy, rename};
 use std::{
@@ -23,7 +22,7 @@ use std::{
     process::Command,
     str::FromStr,
 };
-use zip_extensions::inflate::zip_extract::zip_extract_file_to_memory;
+use zip_extensions::zip_extract_file_to_memory;
 
 use crate::defs::{MODULE_DIR, MODULE_UPDATE_DIR, UPDATE_FILE_NAME};
 use crate::module::ModuleType::{Active, All};
@@ -46,18 +45,59 @@ const INSTALL_MODULE_SCRIPT: &str = concatcp!(
 /// - Followed by one or more alphanumeric, dot, underscore, or hyphen characters
 /// - Minimum length: 2 characters
 pub fn validate_module_id(module_id: &str) -> Result<()> {
-    let re = Regex::new(r"^[a-zA-Z][a-zA-Z0-9._-]+$")?;
-    if re.is_match(module_id) {
-        Ok(())
-    } else {
-        Err(anyhow!(
-            "Invalid module ID: '{module_id}'. Must match /^[a-zA-Z][a-zA-Z0-9._-]+$/"
-        ))
+    if module_id.is_empty() {
+        bail!("Module ID cannot be empty");
     }
+
+    if module_id.len() < 2 {
+        bail!("Module ID too short: must be at least 2 characters");
+    }
+
+    if module_id.len() > 64 {
+        bail!(
+            "Module ID too long: {} characters (max: 64)",
+            module_id.len()
+        );
+    }
+
+    // Check first character: must be a letter
+    let first_char = module_id.chars().next().unwrap();
+    if !first_char.is_ascii_alphabetic() {
+        bail!(
+            "Module ID must start with a letter (a-zA-Z), got: '{}'",
+            first_char
+        );
+    }
+
+    // Check remaining characters: alphanumeric, dot, underscore, or hyphen
+    for (i, ch) in module_id.chars().enumerate() {
+        if i == 0 {
+            continue; // Already checked
+        }
+
+        if !ch.is_ascii_alphanumeric() && ch != '.' && ch != '_' && ch != '-' {
+            bail!(
+                "Module ID contains invalid character '{}' at position {}. Only letters, digits, '.', '_', and '-' are allowed",
+                ch,
+                i
+            );
+        }
+    }
+
+    // Additional security checks
+    if module_id.contains("..") {
+        bail!("Module ID cannot contain '..' sequence");
+    }
+
+    if module_id == "." || module_id == ".." {
+        bail!("Module ID cannot be '.' or '..'");
+    }
+
+    Ok(())
 }
 
 /// Get common environment variables for script execution
-pub fn get_common_script_envs() -> Vec<(&'static str, String)> {
+pub(crate) fn get_common_script_envs() -> Vec<(&'static str, String)> {
     vec![
         ("ASH_STANDALONE", "1".to_string()),
         ("KSU", "true".to_string()),
@@ -103,14 +143,13 @@ fn ensure_boot_completed() -> Result<()> {
 }
 
 #[derive(PartialEq, Eq)]
-pub enum ModuleType {
+pub(crate) enum ModuleType {
     All,
     Active,
     Updated,
 }
 
-#[allow(clippy::needless_pass_by_value)]
-pub fn foreach_module(
+pub(crate) fn foreach_module(
     module_type: ModuleType,
     mut f: impl FnMut(&Path) -> Result<()>,
 ) -> Result<()> {
@@ -165,31 +204,33 @@ pub fn load_sepolicy_rule() -> Result<()> {
 pub fn exec_script<T: AsRef<Path>>(path: T, wait: bool) -> Result<()> {
     info!("exec {}", path.as_ref().display());
 
-    let is_module_script = path.as_ref().starts_with(defs::MODULE_DIR);
-    // Extract module_id from path if it matches /data/adb/modules/{id}/...
-    let module_id = if is_module_script {
-        path.as_ref()
-            .strip_prefix(defs::MODULE_DIR)
-            .ok()
-            .and_then(|p| p.components().next())
-            .and_then(|c| c.as_os_str().to_str())
-            .map(ToString::to_string)
-    } else {
-        None
-    };
+        let is_module_script = path.as_ref().starts_with(defs::MODULE_DIR);
+        // Extract module_id from path if it matches /data/adb/modules/{id}/...
+        let module_id = if is_module_script {
+            path.as_ref()
+                .strip_prefix(defs::MODULE_DIR)
+                .ok()
+                .and_then(|p| p.components().next())
+                .and_then(|c| c.as_os_str().to_str())
+                .map(ToString::to_string)
+        } else {
+            None
+        };
 
     // Validate and log module_id extraction
     let validated_module_id = module_id
         .as_ref()
         .and_then(|id| match validate_module_id(id) {
-            Ok(()) => {
-                debug!("Module ID extracted from script path: '{id}'");
+            Ok(_) => {
+                debug!("Module ID extracted from script path: '{}'", id);
                 Some(id.as_str())
             }
             Err(e) => {
                 warn!(
-                    "Invalid module ID '{id}' extracted from script path '{}': {e}",
+                    "Invalid module ID '{}' extracted from script path '{}': {}",
+                    id,
                     path.as_ref().display(),
+                    e
                 );
                 None
             }
@@ -230,7 +271,7 @@ pub fn exec_script<T: AsRef<Path>>(path: T, wait: bool) -> Result<()> {
     } else {
         command.spawn().map(|_| ())
     };
-    result.map_err(|e| anyhow!("Failed to exec {}: {e}", path.as_ref().display()))
+    result.map_err(|err| anyhow!("Failed to exec {}: {}", path.as_ref().display(), err))
 }
 
 pub fn exec_stage_script(stage: &str, block: bool) -> Result<()> {
@@ -319,10 +360,13 @@ pub fn prune_modules() -> Result<()> {
         if is_metamodule {
             info!("Removing metamodule symlink");
             if let Err(e) = metamodule::remove_symlink() {
-                warn!("Failed to remove metamodule symlink: {e}");
+                warn!("Failed to remove metamodule symlink: {}", e);
             }
         } else if let Err(e) = metamodule::exec_metauninstall_script(module_id) {
-            warn!("Failed to exec metamodule uninstall for {module_id}: {e}",);
+            warn!(
+                "Failed to exec metamodule uninstall for {}: {}",
+                module_id, e
+            );
         }
 
         // Then execute module's own uninstall.sh
@@ -335,12 +379,12 @@ pub fn prune_modules() -> Result<()> {
 
         // Clear module configs before removing module directory
         if let Err(e) = crate::module_config::clear_module_configs(module_id) {
-            warn!("Failed to clear configs for {module_id}: {e}");
+            warn!("Failed to clear configs for {}: {}", module_id, e);
         }
 
         // Finally remove the module directory
         if let Err(e) = remove_dir_all(module) {
-            warn!("Failed to remove {}: {e}", module.display());
+            warn!("Failed to remove {}: {}", module.display(), e);
         }
 
         Ok(())
@@ -348,7 +392,7 @@ pub fn prune_modules() -> Result<()> {
 
     // collect remaining modules, if none, clean up metamodule record
     let remaining_modules: Vec<_> = std::fs::read_dir(defs::MODULE_DIR)?
-        .filter_map(std::result::Result::ok)
+        .filter_map(|entry| entry.ok())
         .filter(|entry| entry.path().join("module.prop").exists())
         .collect();
 
@@ -380,12 +424,12 @@ pub fn handle_updated_modules() -> Result<()> {
             if removed {
                 let path = module_dir.join(defs::REMOVE_FILE_NAME);
                 if let Err(e) = ensure_file_exists(&path) {
-                    warn!("Failed to create {}: {e}", path.display());
+                    warn!("Failed to create {}: {}", path.display(), e);
                 }
             } else if disabled {
                 let path = module_dir.join(defs::DISABLE_FILE_NAME);
                 if let Err(e) = ensure_file_exists(&path) {
-                    warn!("Failed to create {}: {e}", path.display());
+                    warn!("Failed to create {}: {}", path.display(), e);
                 }
             }
         }
@@ -394,7 +438,7 @@ pub fn handle_updated_modules() -> Result<()> {
     Ok(())
 }
 
-fn install_module_to_system(zip: &str) -> Result<()> {
+fn _install_module(zip: &str) -> Result<()> {
     ensure_boot_completed()?;
 
     assets::ensure_binaries(false).with_context(|| "Failed to extract assets")?;
@@ -425,7 +469,7 @@ fn install_module_to_system(zip: &str) -> Result<()> {
 
     // Validate module_id format
     validate_module_id(module_id)
-        .with_context(|| format!("Invalid module ID in module.prop: '{module_id}'"))?;
+        .with_context(|| format!("Invalid module ID in module.prop: '{}'", module_id))?;
 
     // Check if this module is a metamodule
     let is_metamodule = metamodule::is_metamodule(&module_prop);
@@ -451,7 +495,7 @@ fn install_module_to_system(zip: &str) -> Result<()> {
     let updated_dir = Path::new(defs::MODULE_UPDATE_DIR).join(module_id);
 
     if is_metamodule {
-        info!("Installing metamodule: {module_id}");
+        info!("Installing metamodule: {}", module_id);
 
         // Check if there's already a metamodule installed
         if metamodule::has_metamodule()
@@ -466,7 +510,7 @@ fn install_module_to_system(zip: &str) -> Result<()> {
                 println!("\n❌ Installation Failed");
                 println!("┌────────────────────────────────");
                 println!("│ A metamodule is already installed");
-                println!("│   Current metamodule: {existing_id}");
+                println!("│   Current metamodule: {}", existing_id);
                 println!("│");
                 println!("│ Only one metamodule can be active at a time.");
                 println!("│");
@@ -532,17 +576,32 @@ fn install_module_to_system(zip: &str) -> Result<()> {
     }
 
     println!("- Module installed successfully!");
-    info!("Module {module_id} installed successfully!");
+    info!("Module {} installed successfully!", module_id);
 
     Ok(())
 }
 
 pub fn install_module(zip: &str) -> Result<()> {
-    let result = install_module_to_system(zip);
+    let result = _install_module(zip);
     if let Err(ref e) = result {
         println!("- Error: {e}");
     }
     result
+}
+
+pub fn uninstall_module(id: &str) -> Result<()> {
+    validate_module_id(id)?;
+
+    let module_path = Path::new(defs::MODULE_DIR).join(id);
+    ensure!(module_path.exists(), "Module {} not found", id);
+
+    // Mark for removal
+    let remove_file = module_path.join(defs::REMOVE_FILE_NAME);
+    File::create(remove_file).with_context(|| "Failed to create remove file")?;
+
+    info!("Module {} marked for removal", id);
+
+    Ok(())
 }
 
 pub fn restore_module(id: &str) -> Result<()> {
@@ -551,28 +610,13 @@ pub fn restore_module(id: &str) -> Result<()> {
     let module_path = Path::new(defs::MODULE_DIR).join(id);
     ensure!(module_path.exists(), "Module {id} not found");
 
-    // Remove the remove mark
+    // Unmark for removal
     let remove_file = module_path.join(defs::REMOVE_FILE_NAME);
     if remove_file.exists() {
         std::fs::remove_file(&remove_file)
-            .with_context(|| format!("Failed to delete remove file for module '{id}'"))?;
-        info!("Removed the remove mark for module {id}");
+            .with_context(|| format!("Failed to prune remove file"))?;
+        info!("Module {} unmarked for removal", id);
     }
-
-    Ok(())
-}
-
-pub fn uninstall_module(id: &str) -> Result<()> {
-    validate_module_id(id)?;
-
-    let module_path = Path::new(defs::MODULE_DIR).join(id);
-    ensure!(module_path.exists(), "Module {id} not found");
-
-    // Mark for removal
-    let remove_file = module_path.join(defs::REMOVE_FILE_NAME);
-    File::create(remove_file).with_context(|| "Failed to create remove file")?;
-
-    info!("Module {id} marked for removal");
 
     Ok(())
 }
@@ -588,14 +632,14 @@ pub fn enable_module(id: &str) -> Result<()> {
     validate_module_id(id)?;
 
     let module_path = Path::new(defs::MODULE_DIR).join(id);
-    ensure!(module_path.exists(), "Module {id} not found");
+    ensure!(module_path.exists(), "Module {} not found", id);
 
     let disable_path = module_path.join(defs::DISABLE_FILE_NAME);
     if disable_path.exists() {
         std::fs::remove_file(&disable_path).with_context(|| {
             format!("Failed to remove disable file: {}", disable_path.display())
         })?;
-        info!("Module {id} enabled");
+        info!("Module {} enabled", id);
     }
 
     Ok(())
@@ -603,12 +647,12 @@ pub fn enable_module(id: &str) -> Result<()> {
 
 pub fn disable_module(id: &str) -> Result<()> {
     let module_path = Path::new(defs::MODULE_DIR).join(id);
-    ensure!(module_path.exists(), "Module {id} not found");
+    ensure!(module_path.exists(), "Module {} not found", id);
 
     let disable_path = module_path.join(defs::DISABLE_FILE_NAME);
     ensure_file_exists(disable_path)?;
 
-    info!("Module {id} disabled");
+    info!("Module {} disabled", id);
 
     Ok(())
 }
@@ -629,7 +673,7 @@ fn mark_all_modules(flag_file: &str) -> Result<()> {
         let path = entry.path();
         let flag = path.join(flag_file);
         if let Err(e) = ensure_file_exists(flag) {
-            warn!("Failed to mark module: {}: {e}", path.display());
+            warn!("Failed to mark module: {}: {}", path.display(), e);
         }
     }
 
@@ -658,60 +702,12 @@ pub fn read_module_prop(module_path: &Path) -> Result<HashMap<String, String>> {
     Ok(prop_map)
 }
 
-fn resolve_module_icon_path(
-    module_prop_map: &mut HashMap<String, String>,
-    key: &str,
-    module_path: &Path,
-) {
-    if let Some(icon_value) = module_prop_map.get(key) {
-        let icon_value = icon_value.trim();
-        if icon_value.is_empty() {
-            return;
-        }
-        let path = std::path::Path::new(icon_value);
-        if path.is_absolute() {
-            log::warn!(
-                "Rejected {} with absolute path for module {}: {}",
-                key,
-                module_prop_map.get("id").map_or("", String::as_str),
-                icon_value
-            );
-            return;
-        }
-        let has_parent = path
-            .components()
-            .any(|c| matches!(c, std::path::Component::ParentDir));
-        if has_parent {
-            log::warn!(
-                "Rejected {} with parent traversal for module {}: {}",
-                key,
-                module_prop_map.get("id").map_or("", String::as_str),
-                icon_value
-            );
-            return;
-        }
-        let candidate = module_path.join(path);
-        if candidate.exists() && candidate.is_file() {
-            if let Some(s) = candidate.to_str() {
-                module_prop_map.insert(key.to_owned(), s.to_string());
-            }
-        } else {
-            log::debug!(
-                "{} not found for module {}: {}",
-                key,
-                module_prop_map.get("id").map_or("", String::as_str),
-                candidate.display()
-            );
-        }
-    }
-}
-
-fn list_module(path: &str) -> Vec<HashMap<String, String>> {
+fn _list_modules(path: &str) -> Vec<HashMap<String, String>> {
     // Load all module configs once to minimize I/O overhead
     let all_configs = match crate::module_config::get_all_module_configs() {
         Ok(configs) => configs,
         Err(e) => {
-            warn!("Failed to load module configs: {e}");
+            warn!("Failed to load module configs: {}", e);
             HashMap::new()
         }
     };
@@ -735,19 +731,25 @@ fn list_module(path: &str) -> Vec<HashMap<String, String>> {
         let mut module_prop_map = match read_module_prop(&path) {
             Ok(prop) => prop,
             Err(e) => {
-                warn!("Failed to read module.prop for {}: {e}", path.display());
+                warn!("Failed to read module.prop for {}: {}", path.display(), e);
                 continue;
             }
         };
 
+        let dir_id = entry.file_name().to_string_lossy().to_string();
+        module_prop_map.insert("dir_id".to_owned(), dir_id.clone());
+
         // If id is missing or empty, use directory name as fallback
         if !module_prop_map.contains_key("id") || module_prop_map["id"].is_empty() {
-            if let Some(id) = entry.file_name().to_str() {
-                info!("Use dir name as module id: {id}");
-                module_prop_map.insert("id".to_owned(), id.to_owned());
-            } else {
-                info!("Failed to get module id from dir name");
-                continue;
+            match entry.file_name().to_str() {
+                Some(id) => {
+                    info!("Use dir name as module id: {}", id);
+                    module_prop_map.insert("id".to_owned(), id.to_owned());
+                }
+                _ => {
+                    info!("Failed to get module id from dir name");
+                    continue;
+                }
             }
         }
 
@@ -766,9 +768,6 @@ fn list_module(path: &str) -> Vec<HashMap<String, String>> {
         module_prop_map.insert("action".to_owned(), action.to_string());
         module_prop_map.insert("mount".to_owned(), need_mount.to_string());
 
-        resolve_module_icon_path(&mut module_prop_map, "actionIcon", &path);
-        resolve_module_icon_path(&mut module_prop_map, "webuiIcon", &path);
-
         // Apply module config overrides and extract managed features
         if let Some(module_id) = module_prop_map.get("id")
             && let Some(config) = all_configs.get(module_id.as_str())
@@ -783,8 +782,7 @@ fn list_module(path: &str) -> Vec<HashMap<String, String>> {
                 .iter()
                 .filter_map(|(k, v)| {
                     if k.starts_with("manage.") && crate::module_config::parse_bool_config(v) {
-                        k.strip_prefix("manage.")
-                            .map(std::string::ToString::to_string)
+                        k.strip_prefix("manage.").map(|f| f.to_string())
                     } else {
                         None
                     }
@@ -809,7 +807,7 @@ pub fn mount_system() -> Result<()> {
 }
 
 pub fn list_modules() -> Result<()> {
-    let modules = list_module(defs::MODULE_DIR);
+    let modules = _list_modules(defs::MODULE_DIR);
     println!("{}", serde_json::to_string_pretty(&modules)?);
     Ok(())
 }
@@ -822,31 +820,35 @@ pub fn get_managed_features() -> Result<HashMap<String, Vec<String>>> {
 
     foreach_active_module(|module_path| {
         // Get module ID
-        let Some(module_id) = module_path.file_name().and_then(|n| n.to_str()) else {
-            warn!(
-                "Failed to get module id from path: {}",
-                module_path.display()
-            );
-            return Ok(());
+        let module_id = match module_path.file_name().and_then(|n| n.to_str()) {
+            Some(id) => id,
+            None => {
+                warn!(
+                    "Failed to get module id from path: {}",
+                    module_path.display()
+                );
+                return Ok(());
+            }
         };
 
         // Read module config
         let config = match crate::module_config::merge_configs(module_id) {
             Ok(c) => c,
             Err(e) => {
-                warn!("Failed to merge configs for module '{module_id}': {e}");
+                warn!("Failed to merge configs for module '{}': {}", module_id, e);
                 return Ok(()); // Skip this module
             }
         };
 
         // Extract manage.* config entries
         let mut feature_list = Vec::new();
-        for (key, value) in &config {
+        for (key, value) in config.iter() {
             if key.starts_with("manage.") {
                 // Parse feature name
                 if let Some(feature_name) = key.strip_prefix("manage.")
                     && crate::module_config::parse_bool_config(value)
                 {
+                    info!("Module {} manages feature: {}", module_id, feature_name);
                     feature_list.push(feature_name.to_string());
                 }
             }

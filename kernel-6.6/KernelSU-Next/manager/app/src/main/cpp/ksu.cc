@@ -7,13 +7,12 @@
 #include <cstring>
 #include <cstdio>
 #include <unistd.h>
+#include <climits>
 #include <utility>
 #include <android/log.h>
 #include <dirent.h>
 #include <cstdlib>
 
-#include <unistd.h>
-#include <climits>
 #include <sys/syscall.h>
 #include "ksu.h"
 
@@ -80,6 +79,7 @@ struct ksu_get_info_cmd get_info() {
     if (!g_version.version) {
         ksuctl(KSU_IOCTL_GET_INFO, &g_version);
     }
+
     return g_version;
 }
 
@@ -88,11 +88,12 @@ uint32_t get_version() {
     return info.version;
 }
 
-bool get_allow_list(struct ksu_new_get_allow_list_cmd *cmd) {
-    return ksuctl(KSU_IOCTL_NEW_GET_ALLOW_LIST, cmd) == 0;
+bool get_allow_list(struct ksu_get_allow_list_cmd *cmd) {
+    return ksuctl(KSU_IOCTL_GET_ALLOW_LIST, cmd) == 0;
 }
 
 bool is_safe_mode() {
+
     struct ksu_check_safemode_cmd cmd = {};
     ksuctl(KSU_IOCTL_CHECK_SAFEMODE, &cmd);
     return cmd.in_safe_mode;
@@ -153,25 +154,6 @@ bool is_su_enabled() {
     return cmd.value != 0;
 }
 
-bool set_avc_spoof_enabled(bool enabled) {
-    struct ksu_set_feature_cmd cmd = {};
-    cmd.feature_id = KSU_FEATURE_AVC_SPOOF;
-    cmd.value = enabled ? 1 : 0;
-    return ksuctl(KSU_IOCTL_SET_FEATURE, &cmd) == 0;
-}
-
-bool is_avc_spoof_enabled() {
-    struct ksu_get_feature_cmd cmd = {};
-    cmd.feature_id = KSU_FEATURE_AVC_SPOOF;
-    if (ksuctl(KSU_IOCTL_GET_FEATURE, &cmd) != 0) {
-        return false;
-    }
-    if (!cmd.supported) {
-        return false;
-    }
-    return cmd.value != 0;
-}
-
 static inline bool get_feature(uint32_t feature_id, uint64_t *out_value, bool *out_supported) {
     struct ksu_get_feature_cmd cmd = {};
     cmd.feature_id = feature_id;
@@ -206,6 +188,16 @@ bool is_kernel_umount_enabled() {
     return value != 0;
 }
 
+uid_t get_manager_uid(void)
+{
+    struct ksu_get_manager_uid_cmd cmd = {0};
+
+    if (ksuctl(KSU_IOCTL_GET_MANAGER_UID, &cmd) == 0)
+        return (uid_t)cmd.uid;
+
+    return (uid_t)-1;
+}
+
 const char* get_hook_mode(void)
 {
     static struct ksu_get_hook_mode_cmd cmd = {0};
@@ -214,16 +206,6 @@ const char* get_hook_mode(void)
         return cmd.mode;
 
     return "Unknown";
-}
-
-uid_t get_manager_appid(void)
-{
-    static struct ksu_get_manager_appid_cmd cmd = {0};
-
-    if (ksuctl(KSU_IOCTL_GET_MANAGER_APPID, &cmd) == 0)
-        return cmd.appid;
-
-    return 0;
 }
 
 const char* get_version_tag(void)
@@ -238,4 +220,21 @@ const char* get_version_tag(void)
 
 bool is_zygisk_enabled() {
     return !!getenv("ZYGISK_ENABLED");
+}
+
+
+bool set_enhanced_security_enabled(bool enabled) {
+    return set_feature(KSU_FEATURE_ENHANCED_SECURITY, enabled ? 1 : 0);
+}
+
+bool is_enhanced_security_enabled() {
+    uint64_t value = 0;
+    bool supported = false;
+    if (!get_feature(KSU_FEATURE_ENHANCED_SECURITY, &value, &supported)) {
+        return false;
+    }
+    if (!supported) {
+        return false;
+    }
+    return value != 0;
 }

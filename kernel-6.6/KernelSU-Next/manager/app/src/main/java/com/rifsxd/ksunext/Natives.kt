@@ -17,8 +17,7 @@ object Natives {
     // 10977: change groups_count and groups to avoid overflow write
     // 11071: Fix the issue of failing to set a custom SELinux type.
     // 12797: zygisk query and get manager uid.
-    // 32310: new get_allow_list ioctl
-    const val MINIMAL_SUPPORTED_KERNEL = 32310
+    const val MINIMAL_SUPPORTED_KERNEL = 22000
 
     const val KERNEL_SU_DOMAIN = "u:r:su:s0"
 
@@ -32,7 +31,6 @@ object Natives {
     val version: Int
         external get
 
-    // deprecated
     // get the uid list of allowed su processes.
     val allowList: IntArray
         external get
@@ -52,7 +50,7 @@ object Natives {
      * Get the UID of the current root manager.
      * @return manager UID, or 0 if unavailable.
      */
-    external fun getManagerAppid(): Int
+    external fun getManagerUid(): Int
 
     /**
      * Get a string indicating the SU hook mode enabled in kernel.
@@ -102,20 +100,13 @@ object Natives {
     external fun setKernelUmountEnabled(enabled: Boolean): Boolean
 
     /**
-     * Get the user name for the uid.
-     */
-    external fun getUserName(uid: Int): String?
-
-    /**
-     * Avc spoof can be enabled/disabled.
+     * Enhanced security can be enabled/disabled.
      *  0: disabled
      *  1: enabled
      *  negative : error
      */
-    external fun isAvcSpoofEnabled(): Boolean
-    external fun setAvcSpoofEnabled(enabled: Boolean): Boolean
-
-    external fun getSuperuserCount(): Int
+    external fun isEnhancedSecurityEnabled(): Boolean
+    external fun setEnhancedSecurityEnabled(enabled: Boolean): Boolean
 
     private const val NON_ROOT_DEFAULT_PROFILE_KEY = "$"
     private const val NOBODY_UID = 9999
@@ -142,6 +133,7 @@ object Natives {
     }
 
     val KSU_WORK_DIR = "/data/adb/ksu/"
+    val GLOBAL_NAMESPACE_FILE = KSU_WORK_DIR + ".global_mnt"
 
     @Immutable
     @Parcelize

@@ -1,4 +1,3 @@
-
 #include <linux/err.h>
 #include <linux/fs.h>
 #include <linux/list.h>
@@ -8,12 +7,11 @@
 #include <linux/version.h>
 
 #include "allowlist.h"
-#include "apk_sign.h"
 #include "klog.h" // IWYU pragma: keep
 #include "manager.h"
 #include "throne_tracker.h"
 
-uid_t ksu_manager_appid = KSU_INVALID_APPID;
+uid_t ksu_manager_uid = KSU_INVALID_UID;
 
 #define SYSTEM_PACKAGES_LIST_PATH "/data/system/packages.list"
 
@@ -22,6 +20,45 @@ struct uid_data {
 	u32 uid;
 	char package[KSU_MAX_PACKAGE_NAME];
 };
+
+static int get_pkg_from_apk_path(char *pkg, const char *path)
+{
+	int len = strlen(path);
+	if (len >= KSU_MAX_PACKAGE_NAME || len < 1)
+		return -1;
+
+	const char *last_slash = NULL;
+	const char *second_last_slash = NULL;
+
+	int i;
+	for (i = len - 1; i >= 0; i--) {
+		if (path[i] == '/') {
+			if (!last_slash) {
+				last_slash = &path[i];
+			} else {
+				second_last_slash = &path[i];
+				break;
+			}
+		}
+	}
+
+	if (!last_slash || !second_last_slash)
+		return -1;
+
+	const char *last_hyphen = strchr(second_last_slash, '-');
+	if (!last_hyphen || last_hyphen > last_slash)
+		return -1;
+
+	int pkg_len = last_hyphen - second_last_slash - 1;
+	if (pkg_len >= KSU_MAX_PACKAGE_NAME || pkg_len <= 0)
+		return -1;
+
+	// Copying the package name
+	strncpy(pkg, second_last_slash + 1, pkg_len);
+	pkg[pkg_len] = '\0';
+
+	return 0;
+}
 
 static void crown_manager(const char *apk, struct list_head *uid_data)
 {
@@ -33,13 +70,21 @@ static void crown_manager(const char *apk, struct list_head *uid_data)
 
 	pr_info("manager pkg: %s\n", pkg);
 
+#ifdef KSU_MANAGER_PACKAGE
+	// pkg is `/<real package>`
+	if (strncmp(pkg, KSU_MANAGER_PACKAGE, sizeof(KSU_MANAGER_PACKAGE))) {
+		pr_info("manager package is inconsistent with kernel build: %s\n",
+				KSU_MANAGER_PACKAGE);
+		return;
+	}
+#endif
 	struct list_head *list = (struct list_head *)uid_data;
 	struct uid_data *np;
 
 	list_for_each_entry (np, list, list) {
 		if (strncmp(np->package, pkg, KSU_MAX_PACKAGE_NAME) == 0) {
 			pr_info("Crowning manager: %s(uid=%d)\n", pkg, np->uid);
-			ksu_set_manager_appid(np->uid);
+			ksu_set_manager_uid(np->uid);
 			break;
 		}
 	}
@@ -128,7 +173,11 @@ FILLDIR_RETURN_TYPE my_actor(struct dir_context *ctx, const char *name,
 	} else {
 		if ((namelen == 8) && (strncmp(name, "base.apk", namelen) == 0)) {
 			struct apk_path_hash *pos, *n;
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 8, 0)
+			unsigned int hash = full_name_hash(dirpath, strlen(dirpath));
+#else
 			unsigned int hash = full_name_hash(NULL, dirpath, strlen(dirpath));
+#endif
 			list_for_each_entry (pos, &apk_path_hash_list, list) {
 				if (hash == pos->hash) {
 					pos->exists = true;
@@ -246,7 +295,7 @@ static bool is_uid_exist(uid_t uid, char *package, void *data)
 
 	bool exist = false;
 	list_for_each_entry (np, list, list) {
-		if (np->uid == uid % PER_USER_RANGE &&
+		if (np->uid == uid % 100000 &&
 			strncmp(np->package, package, KSU_MAX_PACKAGE_NAME) == 0) {
 			exist = true;
 			break;
@@ -291,14 +340,12 @@ void track_throne(bool prune_only)
 		char *package = strsep(&tmp, delim);
 		char *uid = strsep(&tmp, delim);
 		if (!uid || !package) {
-			kfree(data);
 			pr_err("update_uid: package or uid is NULL!\n");
 			break;
 		}
 
 		u32 res;
 		if (kstrtou32(uid, 10, &res)) {
-			kfree(data);
 			pr_err("update_uid: uid parse err\n");
 			break;
 		}
@@ -320,14 +367,17 @@ void track_throne(bool prune_only)
 	// first, check if manager_uid exist!
 	bool manager_exist = false;
 	list_for_each_entry (np, &uid_list, list) {
-		if (np->uid == ksu_get_manager_appid()) {
+		// if manager is installed in work profile, the uid in packages.list is still equals main profile
+		// don't delete it in this case!
+		int manager_uid = ksu_get_manager_uid() % 100000;
+		if (np->uid == manager_uid) {
 			manager_exist = true;
 			break;
 		}
 	}
 
 	if (!manager_exist) {
-		if (ksu_is_manager_appid_valid()) {
+		if (ksu_is_manager_uid_valid()) {
 			pr_info("manager is uninstalled, invalidate it!\n");
 			ksu_invalidate_manager_uid();
 			goto prune;

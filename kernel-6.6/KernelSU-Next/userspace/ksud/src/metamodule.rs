@@ -17,10 +17,13 @@ use crate::{assets, defs};
 
 /// Determine whether the provided module properties mark it as a metamodule
 pub fn is_metamodule(props: &HashMap<String, String>) -> bool {
-    props.get("metamodule").is_some_and(|s| {
-        let trimmed = s.trim();
-        trimmed == "1" || trimmed.eq_ignore_ascii_case("true")
-    })
+    props
+        .get("metamodule")
+        .map(|s| {
+            let trimmed = s.trim();
+            trimmed == "1" || trimmed.eq_ignore_ascii_case("true")
+        })
+        .unwrap_or(false)
 }
 
 /// Get metamodule path if it exists
@@ -41,11 +44,12 @@ pub fn get_metamodule_path() -> Option<PathBuf> {
 
         if resolved.exists() && resolved.is_dir() {
             return Some(resolved);
+        } else {
+            warn!(
+                "Metamodule symlink points to non-existent path: {:?}",
+                resolved
+            );
         }
-        warn!(
-            "Metamodule symlink points to non-existent path: {}",
-            resolved.display()
-        );
     }
 
     // Fallback: search for metamodule=1 in modules directory
@@ -54,10 +58,7 @@ pub fn get_metamodule_path() -> Option<PathBuf> {
         if let Ok(props) = crate::module::read_module_prop(module_path)
             && is_metamodule(&props)
         {
-            info!(
-                "Found metamodule in modules directory: {}",
-                module_path.display()
-            );
+            info!("Found metamodule in modules directory: {:?}", module_path);
             result = Some(module_path.to_path_buf());
         }
         Ok(())
@@ -112,14 +113,13 @@ pub fn check_install_safety() -> Result<(), bool> {
 
 /// Create or update the metamodule symlink
 /// Points /data/adb/metamodule -> /data/adb/modules/{module_id}
-pub fn ensure_symlink(module_path: &Path) -> Result<()> {
+pub(crate) fn ensure_symlink(module_path: &Path) -> Result<()> {
     // METAMODULE_DIR might have trailing slash, so we need to trim it
     let symlink_path = Path::new(defs::METAMODULE_DIR.trim_end_matches('/'));
 
     info!(
-        "Creating metamodule symlink: {} -> {}",
-        symlink_path.display(),
-        module_path.display()
+        "Creating metamodule symlink: {:?} -> {:?}",
+        symlink_path, module_path
     );
 
     // Remove existing symlink if it exists
@@ -137,14 +137,14 @@ pub fn ensure_symlink(module_path: &Path) -> Result<()> {
     // Create symlink
     #[cfg(unix)]
     std::os::unix::fs::symlink(module_path, symlink_path)
-        .with_context(|| format!("Failed to create symlink to {}", module_path.display()))?;
+        .with_context(|| format!("Failed to create symlink to {:?}", module_path))?;
 
     info!("Metamodule symlink created successfully");
     Ok(())
 }
 
 /// Remove the metamodule symlink
-pub fn remove_symlink() -> Result<()> {
+pub(crate) fn remove_symlink() -> Result<()> {
     let symlink_path = Path::new(defs::METAMODULE_DIR.trim_end_matches('/'));
 
     if symlink_path.is_symlink() {
@@ -158,35 +158,37 @@ pub fn remove_symlink() -> Result<()> {
 
 /// Get the install script content, using metainstall.sh from metamodule if available
 /// Returns the script content to be executed
-pub fn get_install_script(
+pub(crate) fn get_install_script(
     is_metamodule: bool,
     installer_content: &str,
     install_module_script: &str,
 ) -> Result<String> {
     // Check if there's a metamodule with metainstall.sh
     // Only apply this logic for regular modules (not when installing metamodule itself)
-    let install_script = if is_metamodule {
-        info!("Installing metamodule, using default installer");
-        install_module_script.to_string()
-    } else if let Some(metamodule_path) = get_metamodule_path() {
-        if metamodule_path.join(defs::DISABLE_FILE_NAME).exists() {
-            info!("Metamodule is disabled, using default installer");
-            install_module_script.to_string()
-        } else {
-            let metainstall_path = metamodule_path.join(defs::METAMODULE_METAINSTALL_SCRIPT);
-
-            if metainstall_path.exists() {
-                info!("Using metainstall.sh from metamodule");
-                let metamodule_content = std::fs::read_to_string(&metainstall_path)
-                    .with_context(|| "Failed to read metamodule metainstall.sh")?;
-                format!("{installer_content}\n{metamodule_content}\nexit 0\n")
-            } else {
-                info!("Metamodule exists but has no metainstall.sh, using default installer");
+    let install_script = if !is_metamodule {
+        if let Some(metamodule_path) = get_metamodule_path() {
+            if metamodule_path.join(defs::DISABLE_FILE_NAME).exists() {
+                info!("Metamodule is disabled, using default installer");
                 install_module_script.to_string()
+            } else {
+                let metainstall_path = metamodule_path.join(defs::METAMODULE_METAINSTALL_SCRIPT);
+
+                if metainstall_path.exists() {
+                    info!("Using metainstall.sh from metamodule");
+                    let metamodule_content = std::fs::read_to_string(&metainstall_path)
+                        .with_context(|| "Failed to read metamodule metainstall.sh")?;
+                    format!("{}\n{}\nexit 0\n", installer_content, metamodule_content)
+                } else {
+                    info!("Metamodule exists but has no metainstall.sh, using default installer");
+                    install_module_script.to_string()
+                }
             }
+        } else {
+            info!("No metamodule found, using default installer");
+            install_module_script.to_string()
         }
     } else {
-        info!("No metamodule found, using default installer");
+        info!("Installing metamodule, using default installer");
         install_module_script.to_string()
     };
 
@@ -202,7 +204,7 @@ fn check_metamodule_script(script_name: &str) -> Option<PathBuf> {
 
     // Check if metamodule is disabled
     if metamodule_path.join(defs::DISABLE_FILE_NAME).exists() {
-        info!("Metamodule is disabled, skipping {script_name}");
+        info!("Metamodule is disabled, skipping {}", script_name);
         return None;
     }
 
@@ -216,13 +218,16 @@ fn check_metamodule_script(script_name: &str) -> Option<PathBuf> {
 }
 
 /// Execute metamodule's metauninstall.sh for a specific module
-pub fn exec_metauninstall_script(module_id: &str) -> Result<()> {
+pub(crate) fn exec_metauninstall_script(module_id: &str) -> Result<()> {
     let Some(metauninstall_path) = check_metamodule_script(defs::METAMODULE_METAUNINSTALL_SCRIPT)
     else {
         return Ok(());
     };
 
-    info!("Executing metamodule metauninstall.sh for module: {module_id}",);
+    info!(
+        "Executing metamodule metauninstall.sh for module: {}",
+        module_id
+    );
 
     let result = Command::new(assets::BUSYBOX_PATH)
         .args(["sh", metauninstall_path.to_str().unwrap()])
@@ -233,10 +238,15 @@ pub fn exec_metauninstall_script(module_id: &str) -> Result<()> {
 
     ensure!(
         result.success(),
-        "Metamodule metauninstall.sh failed for module {module_id}: {result:?}"
+        "Metamodule metauninstall.sh failed for module {}: {:?}",
+        module_id,
+        result
     );
 
-    info!("Metamodule metauninstall.sh executed successfully for {module_id}",);
+    info!(
+        "Metamodule metauninstall.sh executed successfully for {}",
+        module_id
+    );
     Ok(())
 }
 
@@ -256,7 +266,8 @@ pub fn exec_mount_script(module_dir: &str) -> Result<()> {
 
     ensure!(
         result.success(),
-        "Metamodule mount script failed with status: {result:?}"
+        "Metamodule mount script failed with status: {:?}",
+        result
     );
 
     info!("Metamodule mount script executed successfully");
@@ -265,12 +276,12 @@ pub fn exec_mount_script(module_dir: &str) -> Result<()> {
 
 /// Execute metamodule script for a specific stage
 pub fn exec_stage_script(stage: &str, block: bool) -> Result<()> {
-    let Some(script_path) = check_metamodule_script(&format!("{stage}.sh")) else {
+    let Some(script_path) = check_metamodule_script(&format!("{}.sh", stage)) else {
         return Ok(());
     };
 
-    info!("Executing metamodule {stage}.sh");
+    info!("Executing metamodule {}.sh", stage);
     crate::module::exec_script(&script_path, block)?;
-    info!("Metamodule {stage}.sh executed successfully");
+    info!("Metamodule {}.sh executed successfully", stage);
     Ok(())
 }

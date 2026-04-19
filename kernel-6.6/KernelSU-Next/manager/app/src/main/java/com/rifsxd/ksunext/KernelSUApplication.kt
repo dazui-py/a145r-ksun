@@ -8,7 +8,6 @@ import androidx.lifecycle.ViewModelStoreOwner
 import coil.Coil
 import coil.ImageLoader
 import com.rifsxd.ksunext.ui.util.createRootShellBuilder
-import com.rifsxd.ksunext.ui.viewmodel.ModuleViewModel
 import com.rifsxd.ksunext.ui.viewmodel.SuperUserViewModel
 import com.topjohnwu.superuser.Shell
 import kotlinx.coroutines.CoroutineScope
@@ -34,15 +33,9 @@ class KernelSUApplication : Application(), ViewModelStoreOwner {
         Shell.setDefaultBuilder(createRootShellBuilder(true))
         Shell.enableVerboseLogging = BuildConfig.DEBUG
 
-        val moduleViewModel = ViewModelProvider(this)[ModuleViewModel::class.java]
         val superUserViewModel = ViewModelProvider(this)[SuperUserViewModel::class.java]
         CoroutineScope(Dispatchers.Main).launch {
-            if (superUserViewModel.appList.isEmpty()) {
-                superUserViewModel.fetchAppList()
-            }
-            if (moduleViewModel.moduleList.isEmpty()) {
-                moduleViewModel.fetchModuleList()
-            }
+            superUserViewModel.fetchAppList()
         }
 
         val context = this
